@@ -9,7 +9,6 @@ import (
 	"strings"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -182,9 +181,11 @@ func main() {
 }
 
 func printStatus() {
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-	fmt.Printf("\rAlloc Mem = %vKB; Total Files = %v; Processed Files = %v; Total Dirs = %v; Processed Dirs = %v;", m.Alloc/1024, totalFiles, processedFiles, totalDirs, processedDirs)
+	if *delFlag {
+		fmt.Printf("\rScanned Files = %v; Deleted Files = %v; Scanned Dirs = %v; Deleted Dirs = %v;", totalFiles, processedFiles, totalDirs, processedDirs)
+	} else {
+		fmt.Printf("\rScanned Files = %v; Scanned Dirs = %v;", totalFiles, totalDirs)
+	}
 }
 
 func askForConfirmation(s string) bool {
