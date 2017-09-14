@@ -1,137 +1,36 @@
 package main
 
 import (
-	"bufio"
-	"gopkg.in/alecthomas/kingpin.v2"
-	"log"
 	"fmt"
-	"os"
-	"strings"
-	"os/exec"
+	"log"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 	"time"
+
+	"github.com/Songmu/prompter"
+	//https://groups.google.com/forum/#!topic/golang-nuts/Mwn9buVnLmY
+	"gopkg.in/alecthomas/kingpin.v2"
 )
 
 var (
-	delFlag  = kingpin.Flag("delete", "DELETE the folder provided WITH ALL ITS CONTENTS").Short('d').Bool()
-	dirParam = kingpin.Arg("dir", "Folder in Lustre to process").Required().ExistingDir()
+	delFlag         = kingpin.Flag("delete", "DELETE the folder provided WITH ALL ITS CONTENTS").Short('d').Bool()
+	cpFlag          = kingpin.Flag("copy", "Copy the folder provided").Short('c').Bool()
+	fileWorkersFlag = kingpin.Flag("fworkers", "Number of file copy workers per folder").Default("4").Short('w').Int()
+	dirWorkersFlag  = kingpin.Flag("dworkers", "Number of dir copy workers per folder").Default("2").Short('e').Int()
+	dirParam        = kingpin.Arg("dir", "Folder in Lustre to process").Required().ExistingDir()
+	targetParam     = kingpin.Arg("tdir", "Folder in Lustre to copy to").ExistingDir()
 )
 
 var (
-	totalFiles     uint64 = 0
-	totalDirs      uint64 = 0
-	processedFiles uint64 = 0
-	processedDirs  uint64 = 0
+	totalFiles     uint64
+	totalDirs      uint64
+	processedFiles uint64
+	processedDirs  uint64
+	bytes          uint64
 )
 
-func processDir(dir string) error {
-	dirsChan := make(chan string, 1000001)
-	filesChan := make(chan string, 1000001)
-
-	var wg sync.WaitGroup
-
-	absPath, err := filepath.Abs(dir)
-	if err != nil {
-		return err
-	}
-
-	cmdDirName := "lfs"
-	cmdDirArgs := []string{"find", absPath, "-maxdepth", "1", "-type", "d"}
-
-	cmdDir := exec.Command(cmdDirName, cmdDirArgs...)
-	cmdDirReader, err := cmdDir.StdoutPipe()
-	if err != nil {
-		log.Print("Error running lustre find: %v", err)
-		return err
-	}
-
-	scannerDir := bufio.NewScanner(cmdDirReader)
-
-	err = cmdDir.Start()
-	if err != nil {
-		return err
-	}
-
-	wg.Add(1)
-	go func() {
-		defer close(dirsChan)
-		defer wg.Done()
-
-		for scannerDir.Scan() {
-			newDir := scannerDir.Text()
-			if newDir != absPath {
-				dirsChan <- newDir
-				atomic.AddUint64(&totalDirs, uint64(1))
-			}
-		}
-		cmdDir.Wait()
-	}()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for dir := range dirsChan {
-			err := processDir(dir)
-			if err != nil {
-				log.Print("Error processing folder %s: %v", dir, err)
-			}
-		}
-	}()
-
-	cmdFileName := "lfs"
-	cmdFileArgs := []string{"find", absPath, "-maxdepth", "1", "!", "-type", "d"}
-
-	cmdFile := exec.Command(cmdFileName, cmdFileArgs...)
-	cmdFileReader, err := cmdFile.StdoutPipe()
-	if err != nil {
-		log.Print("Error running lustre find: %v", err)
-		return err
-	}
-
-	scannerFile := bufio.NewScanner(cmdFileReader)
-
-	err = cmdFile.Start()
-	if err != nil {
-		return err
-	}
-
-	wg.Add(1)
-	go func() {
-		defer close(filesChan)
-		defer wg.Done()
-
-		for scannerFile.Scan() {
-			newFile := scannerFile.Text()
-			filesChan <- newFile
-			atomic.AddUint64(&totalFiles, uint64(1))
-		}
-		cmdFile.Wait()
-	}()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for file := range filesChan {
-			if *delFlag {
-				// log.Printf("Deleting file %s", file)
-				os.Remove(file)
-			}
-			atomic.AddUint64(&processedFiles, uint64(1))
-		}
-	}()
-
-	wg.Wait()
-
-	if *delFlag {
-		// log.Printf("Deleting dir %s", absPath)
-		os.Remove(absPath)
-	}
-
-	atomic.AddUint64(&processedDirs, uint64(1))
-	return nil
-}
+var srcDir string
+var targetDir string
 
 func main() {
 	kingpin.Version("1.0").Author("Dmitry Mishin <dmishin@sdsc.edu>")
@@ -140,14 +39,26 @@ func main() {
 
 	kingpin.Parse()
 
+	var err error
+	srcDir, err = filepath.Abs(*dirParam)
+	if err != nil {
+		fmt.Printf("Error finding the abs src folder: %s", err.Error())
+		return
+	}
+	targetDir, err = filepath.Abs(*targetParam)
+	if err != nil {
+		fmt.Printf("Error finding the abs target folder: %s", err.Error())
+		return
+	}
+
 	if *delFlag {
 		absPath, err := filepath.Abs(*dirParam)
 		if err != nil {
-			fmt.Printf("Error finding the folder: %s", err)
+			fmt.Printf("Error finding the folder: %s", err.Error())
 			return
 		}
 
-		if ! askForConfirmation(fmt.Sprintf("Do you really want to DELETE EVERYTHING in %s", absPath)) {
+		if !prompter.YN(fmt.Sprintf("Do you really want to DELETE EVERYTHING in %s", absPath), false) {
 			return
 		}
 	}
@@ -158,22 +69,22 @@ func main() {
 	quit := make(chan struct{})
 	go func() {
 		defer wg.Done()
-	    for {
-	       select {
-	        case <- ticker.C:
-	        	printStatus()
-	        case <- quit:
-	            ticker.Stop()
-	        	printStatus()
-	        	fmt.Println("")
-	            return
-	        }
-	    }
-	 }()
+		for {
+			select {
+			case <-ticker.C:
+				printStatus()
+			case <-quit:
+				ticker.Stop()
+				printStatus()
+				fmt.Println("")
+				return
+			}
+		}
+	}()
 
-	err := processDir(*dirParam)
+	err = processDir(*dirParam)
 	if err != nil {
-		log.Printf("Error: %s", err)
+		log.Printf("Error: %s", err.Error())
 	}
 
 	close(quit)
@@ -183,28 +94,9 @@ func main() {
 func printStatus() {
 	if *delFlag {
 		fmt.Printf("\rScanned Files = %v; Deleted Files = %v; Scanned Dirs = %v; Deleted Dirs = %v;", totalFiles, processedFiles, totalDirs, processedDirs)
+	} else if *cpFlag {
+		fmt.Printf("\rScanned Files = %v; Copied Files = %v; Scanned Dirs = %v; Copied Dirs = %v; Bytes transferred = %v", totalFiles, processedFiles, totalDirs, processedDirs, bytes)
 	} else {
 		fmt.Printf("\rScanned Files = %v; Scanned Dirs = %v;", totalFiles, totalDirs)
-	}
-}
-
-func askForConfirmation(s string) bool {
-	reader := bufio.NewReader(os.Stdin)
-
-	for {
-		fmt.Printf("%s [yes/no]: ", s)
-
-		response, err := reader.ReadString('\n')
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		response = strings.ToLower(strings.TrimSpace(response))
-
-		if response == "yes" {
-			return true
-		} else if response == "no" {
-			return false
-		}
 	}
 }
