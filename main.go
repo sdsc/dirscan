@@ -14,11 +14,16 @@ import (
 )
 
 var (
+	summaryFlag = kingpin.Flag("summary", "Only give summary in the end").Default("false").Bool()
+
+	excludeFlag = kingpin.Flag("exclude", "Folder to exclude").Short('x').ExistingDirs()
+
 	fileWorkersFlag = kingpin.Flag("fworkers", "Number of file copy workers per folder").Default("4").Short('w').Int()
 	dirWorkersFlag  = kingpin.Flag("dworkers", "Number of dir copy workers per folder").Default("2").Short('e').Int()
 
-	countCommand  = kingpin.Command("count", "Count the number of files and folders")
-	countDirParam = countCommand.Arg("dir", "Folder in Lustre").Required().ExistingDir()
+	countCommand   = kingpin.Command("count", "Count the number of files and folders")
+	countSizeParam = countCommand.Flag("size", "Count the space occupied by files").Short('s').Default("false").Bool()
+	countDirParam  = countCommand.Arg("dir", "Folder in Lustre").Required().ExistingDir()
 
 	rmCommand  = kingpin.Command("rm", "DELETE the folder with all its contents")
 	rmDirParam = rmCommand.Arg("dir", "Folder in Lustre to delete").Required().ExistingDir()
@@ -31,6 +36,7 @@ var (
 var (
 	totalFiles     uint64
 	totalDirs      uint64
+	totalData      uint64
 	processedFiles uint64
 	processedDirs  uint64
 	bytes          uint64
@@ -60,23 +66,26 @@ func main() {
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	ticker := time.NewTicker(2 * time.Second)
 	quit := make(chan struct{})
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-ticker.C:
-				printStatus()
-			case <-quit:
-				ticker.Stop()
-				printStatus()
-				fmt.Println("")
-				return
+
+	if !*summaryFlag {
+		wg.Add(1)
+		ticker := time.NewTicker(2 * time.Second)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ticker.C:
+					printStatus()
+				case <-quit:
+					ticker.Stop()
+					printStatus()
+					fmt.Println("")
+					return
+				}
 			}
-		}
-	}()
+		}()
+	}
 
 	var err, err1 error
 	switch command {
@@ -102,6 +111,22 @@ func main() {
 
 	close(quit)
 	wg.Wait()
+
+	if *summaryFlag {
+		switch command {
+		case rmCommand.FullCommand():
+			fmt.Printf("%s: Scanned Files = %v; Deleted Files = %v; Scanned Dirs = %v; Deleted Dirs = %v;\n", *rmDirParam, totalFiles, processedFiles, totalDirs, processedDirs)
+		case cpCommand.FullCommand():
+			fmt.Printf("%s: Scanned Files = %v; Copied Files = %v; Scanned Dirs = %v; Copied Dirs = %v; Bytes transferred = %s\n", *cpSourceParam, totalFiles, processedFiles, totalDirs, processedDirs, humanize.Bytes(bytes))
+		case countCommand.FullCommand():
+			if *countSizeParam {
+				fmt.Printf("%s: Scanned Files = %v; Scanned Dirs = %v; Data = %s\n", *countDirParam, totalFiles, totalDirs, humanize.Bytes(totalData))
+			} else {
+				fmt.Printf("%s: Scanned Files = %v; Scanned Dirs = %v\n", *countDirParam, totalFiles, totalDirs)
+			}
+		}
+	}
+
 }
 
 func printStatus() {
@@ -111,6 +136,10 @@ func printStatus() {
 	case cpCommand.FullCommand():
 		fmt.Printf("\rScanned Files = %v; Copied Files = %v; Scanned Dirs = %v; Copied Dirs = %v; Bytes transferred = %s", totalFiles, processedFiles, totalDirs, processedDirs, humanize.Bytes(bytes))
 	case countCommand.FullCommand():
-		fmt.Printf("\rScanned Files = %v; Scanned Dirs = %v;", totalFiles, totalDirs)
+		if *countSizeParam {
+			fmt.Printf("\rScanned Files = %v; Scanned Dirs = %v; Data = %s", totalFiles, totalDirs, humanize.Bytes(totalData))
+		} else {
+			fmt.Printf("\rScanned Files = %v; Scanned Dirs = %v", totalFiles, totalDirs)
+		}
 	}
 }

@@ -20,6 +20,13 @@ const Lustre10StripeSize = 1000 * 1000000000
 
 func processDir(dir string) error {
 	// log.Printf("Started: %s", dir)
+
+	for _, exclDir := range *excludeFlag {
+		if exclDir == dir {
+			return nil
+		}
+	}
+
 	var wg sync.WaitGroup
 
 	absPath, err := filepath.Abs(dir)
@@ -203,6 +210,15 @@ func findFiles(dir string, wg *sync.WaitGroup) error {
 			newFile := scannerFile.Text()
 			filesChan <- newFile
 			atomic.AddUint64(&totalFiles, uint64(1))
+
+			if *countSizeParam {
+				if fileInfo, err := os.Lstat(newFile); err != nil {
+					log.Printf("%s", err.Error())
+				} else {
+					atomic.AddUint64(&totalData, uint64(fileInfo.Size()))
+				}
+			}
+
 		}
 
 		slurp, _ := ioutil.ReadAll(stderr)
