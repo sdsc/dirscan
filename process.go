@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -17,6 +18,8 @@ import (
 const LustreNoStripeSize = 10 * 1000000000
 const Lustre5StripeSize = 100 * 1000000000
 const Lustre10StripeSize = 1000 * 1000000000
+
+var emptyDirLock = sync.RWMutex{}
 
 func processDir(dir string) error {
 	// log.Printf("Started: %s", dir)
@@ -206,10 +209,13 @@ func findFiles(dir string, wg *sync.WaitGroup) error {
 			return
 		}
 
+		var counter uint64
+
 		for scannerFile.Scan() {
 			newFile := scannerFile.Text()
 			filesChan <- newFile
 			atomic.AddUint64(&totalFiles, uint64(1))
+			counter++
 
 			if *countSizeParam {
 				if fileInfo, err := os.Lstat(newFile); err != nil {
@@ -222,6 +228,20 @@ func findFiles(dir string, wg *sync.WaitGroup) error {
 		}
 
 		slurp, _ := ioutil.ReadAll(stderr)
+
+		if command == emptyDirCommand.FullCommand() && counter <= *empDirCountFilesParam {
+			if srcRootDir != dir {
+				relPath, err := filepath.Rel(srcRootDir, dir)
+				if err != nil {
+					log.Printf("%s", err.Error())
+				}
+				proj := strings.Split(relPath, string(os.PathSeparator))[0]
+				emptyDirLock.Lock()
+				emptyDirs[proj]++
+				emptyDirLock.Unlock()
+			}
+		}
+
 
 		if err := cmdFile.Wait(); err != nil {
 			log.Printf("%s %s", err.Error(), slurp)

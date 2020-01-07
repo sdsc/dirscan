@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -12,6 +13,11 @@ import (
 	"github.com/dustin/go-humanize"
 	"gopkg.in/alecthomas/kingpin.v2"
 )
+
+type kv struct {
+	Key   string
+	Value uint64
+}
 
 var (
 	summaryFlag = kingpin.Flag("summary", "Only give summary in the end").Default("false").Bool()
@@ -31,11 +37,16 @@ var (
 	cpCommand     = kingpin.Command("cp", "Copy the folder with all its contents")
 	cpSourceParam = cpCommand.Arg("source", "Source folder in Lustre").Required().ExistingDir()
 	cpTargetParam = cpCommand.Arg("target", "Target folder in Lustre").Required().ExistingDir()
+
+	emptyDirCommand     = kingpin.Command("emp", "Count the empty dirs per account")
+	empDirParam = emptyDirCommand.Arg("dir", "The directory to scan").Required().ExistingDir()
+	empDirCountFilesParam = emptyDirCommand.Flag("filenum", "Consider folder emoty if has this many files").Short('c').Default("0").Uint64()
 )
 
 var (
 	totalFiles     uint64
 	totalDirs      uint64
+	emptyDirs      map[string]uint64 = map[string]uint64{}
 	totalData      uint64
 	processedFiles uint64
 	processedDirs  uint64
@@ -96,6 +107,8 @@ func main() {
 		destRootDir, err1 = filepath.Abs(*cpTargetParam)
 	case countCommand.FullCommand():
 		srcRootDir, err = filepath.Abs(*countDirParam)
+	case emptyDirCommand.FullCommand():
+		srcRootDir, err = filepath.Abs(*empDirParam)
 	}
 	if err != nil {
 		log.Fatalf("Error path: %s", err.Error())
@@ -113,18 +126,7 @@ func main() {
 	wg.Wait()
 
 	if *summaryFlag {
-		switch command {
-		case rmCommand.FullCommand():
-			fmt.Printf("%s: Scanned Files = %v; Deleted Files = %v; Scanned Dirs = %v; Deleted Dirs = %v;\n", *rmDirParam, totalFiles, processedFiles, totalDirs, processedDirs)
-		case cpCommand.FullCommand():
-			fmt.Printf("%s: Scanned Files = %v; Copied Files = %v; Scanned Dirs = %v; Copied Dirs = %v; Bytes transferred = %s\n", *cpSourceParam, totalFiles, processedFiles, totalDirs, processedDirs, humanize.Bytes(bytes))
-		case countCommand.FullCommand():
-			if *countSizeParam {
-				fmt.Printf("%s: Scanned Files = %v; Scanned Dirs = %v; Data = %s\n", *countDirParam, totalFiles, totalDirs, humanize.Bytes(totalData))
-			} else {
-				fmt.Printf("%s: Scanned Files = %v; Scanned Dirs = %v\n", *countDirParam, totalFiles, totalDirs)
-			}
-		}
+		printStatus()
 	}
 
 }
@@ -135,6 +137,28 @@ func printStatus() {
 		fmt.Printf("\rScanned Files = %v; Deleted Files = %v; Scanned Dirs = %v; Deleted Dirs = %v;", totalFiles, processedFiles, totalDirs, processedDirs)
 	case cpCommand.FullCommand():
 		fmt.Printf("\rScanned Files = %v; Copied Files = %v; Scanned Dirs = %v; Copied Dirs = %v; Bytes transferred = %s", totalFiles, processedFiles, totalDirs, processedDirs, humanize.Bytes(bytes))
+	case emptyDirCommand.FullCommand():
+		fmt.Printf("%s: Scanned Files = %v; Scanned Dirs = %v\n", *countDirParam, totalFiles, totalDirs)
+
+		var ss []kv
+		emptyDirLock.RLock()
+		for k, v := range emptyDirs {
+			ss = append(ss, kv{k, v})
+		}
+		emptyDirLock.RUnlock()
+
+		sort.Slice(ss, func(i, j int) bool {
+			return ss[i].Value > ss[j].Value
+		})
+
+		elms := 10
+		if len(ss) < elms {
+			elms = len(ss)
+		}
+
+		for _, kv := range ss[:elms] {
+			fmt.Printf("%s: %d\n", kv.Key, kv.Value)
+		}
 	case countCommand.FullCommand():
 		if *countSizeParam {
 			fmt.Printf("\rScanned Files = %v; Scanned Dirs = %v; Data = %s", totalFiles, totalDirs, humanize.Bytes(totalData))
